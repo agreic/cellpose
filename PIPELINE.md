@@ -31,7 +31,10 @@ That single command is all you need.  Create one `config.json` per experiment
 (or per batch of experiments) and point the script at it.
 
 To abort at any time press **CTRL+C**.  All running Cellpose processes will be
-terminated immediately and GPU memory will be freed.
+terminated immediately and GPU memory will be freed.  If the pipeline is running
+in detached mode (no interactive console), create a file called
+`ABORT_PIPELINE.txt` in the output directory instead — see
+[Aborting a Detached Run](#aborting-a-detached-run).
 
 ---
 
@@ -81,6 +84,22 @@ Every Cellpose subprocess is tracked in a global registry.  If the pipeline
 exits for any reason (CTRL+C, crash, unhandled exception), an `atexit` handler
 terminates all registered subprocesses so that GPU memory is released
 immediately.
+
+### Graceful abort via kill-switch file
+
+When the pipeline runs in detached mode (no interactive console), CTRL+C
+cannot reach the process.  Force-killing with `taskkill /F` bypasses all
+Python cleanup handlers and leaves GPU memory locked.
+
+Instead, the pipeline watches for a **kill-switch sentinel file** named
+`ABORT_PIPELINE.txt` in the output directory.  When this file appears the
+pipeline:
+
+1. Stops downloading new FOV folders immediately.
+2. Lets any Cellpose process that is already running finish its current image.
+3. Uploads completed results, cleans up scratch storage, and exits gracefully.
+
+See [Aborting a Detached Run](#aborting-a-detached-run) below for instructions.
 
 ---
 
@@ -198,6 +217,38 @@ own defaults.
 
 ---
 
+## Aborting a Detached Run
+
+If the pipeline is running without an interactive console (e.g. launched via
+Task Scheduler, `Start-Process`, or a remote session), **do not force-kill the
+process**.  Force-killing bypasses all Python cleanup, leaves orphaned files on
+the scratch drive, and keeps GPU memory locked.
+
+Instead, create an empty file named `ABORT_PIPELINE.txt` inside the
+`output_root` directory for your run.  The pipeline checks for this file once
+per second.
+
+**PowerShell example** (adjust the path to match your `output_root`):
+
+```powershell
+New-Item -Path "T:\TimelapseData\251118YZ18\Analysis\Segmentation_251128\ABORT_PIPELINE.txt" -ItemType File
+```
+
+Once the file is detected the pipeline will:
+
+1. Stop fetching new FOV folders immediately.
+2. Let the currently running Cellpose process finish its image.
+3. Upload the last completed results to the network.
+4. Clean up all temporary files on the scratch drive.
+5. Release GPU memory and exit.
+
+The sentinel file is deleted automatically so it does not interfere with
+subsequent runs.  Because every completed FOV is marked with
+`.pipeline_completed`, you can simply re-run the same command later to resume
+from where the abort occurred.
+
+---
+
 ## Re-running and Recovery
 
 Because the pipeline checks for `.pipeline_completed` before processing each
@@ -220,6 +271,7 @@ directory.
 | `No files matching '...' found` | `img_filter` does not match any files in a FOV folder. | Verify the filter string against actual filenames. |
 | `Cellpose exited with code 1` | Cellpose encountered an error. | Open the `cellpose_run.log` in the FOV's output directory for the full error message. |
 | Pipeline hangs after CTRL+C | Should not happen.  The polling loop yields to `KeyboardInterrupt` and the `atexit` handler kills all subprocesses. | If a process survives, kill it manually via Task Manager and check for leftover files in `local_scratch_root`. |
+| Need to stop a detached run | The process has no console to receive CTRL+C and `taskkill /F` skips cleanup. | Create `ABORT_PIPELINE.txt` in the `output_root` directory (see [Aborting a Detached Run](#aborting-a-detached-run)). |
 | Scratch disk fills up | Too many FOVs staged at once, or previous runs left behind temporary directories. | Reduce `max_staged_folders` in `pipeline_tuning`.  Manually delete leftover `*_tmp` directories in `local_scratch_root`. |
 
 ---

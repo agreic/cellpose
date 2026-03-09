@@ -487,11 +487,36 @@ def main() -> None:
             t.start()
             fetch_threads.append(t)
 
-        # Poll fetch threads so the main thread can still respond to CTRL+C.
+        # Define the kill-switch sentinel file.  Creating this file in the
+        # output directory triggers a graceful shutdown, which is the only
+        # safe way to stop the pipeline when it runs in detached mode
+        # (i.e. without an interactive console that can receive CTRL+C).
+        kill_switch = output_root / "ABORT_PIPELINE.txt"
+
+        def _check_for_abort() -> bool:
+            """Return True and drain the fetch queue if the kill-switch file exists."""
+            if not kill_switch.exists():
+                return False
+            logger.critical("Abort file detected. Initiating graceful shutdown.")
+            kill_switch.unlink(missing_ok=True)
+            while not fov_queue.empty():
+                try:
+                    fov_queue.get_nowait()
+                    fov_queue.task_done()
+                except queue.Empty:
+                    break
+            return True
+
+        # Poll fetch threads, checking for both CTRL+C and the kill switch.
+        abort_triggered = False
         while any(t.is_alive() for t in fetch_threads):
+            if _check_for_abort():
+                abort_triggered = True
+                break
             time.sleep(1)
 
-        # All fetching is done; send one stop sentinel per GPU worker.
+        # Send one stop sentinel per GPU worker so they exit after finishing
+        # their current job.
         for _ in gpu_threads:
             ready_queue.put(None)
 
@@ -499,7 +524,10 @@ def main() -> None:
         while any(t.is_alive() for t in gpu_threads):
             time.sleep(1)
 
-        logger.info("Pipeline execution complete.")
+        if abort_triggered:
+            logger.info("Pipeline safely aborted by user.")
+        else:
+            logger.info("Pipeline execution complete.")
 
     except KeyboardInterrupt:
         logger.critical("Interrupted by user. Aborting pipeline.")
