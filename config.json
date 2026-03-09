@@ -7,14 +7,15 @@
         "gpu_workers": 2,
         "max_staged_folders": 4
     },
-    "input_root": "D:\\AG\\260112AC11",
-    "output_root": "T:\\AG\\temp2\\260112AC11",
+    "input_root": "T:\\251118YZ18",
+    "output_root": "T:\\251118YZ18\\Analysis\\Segmentation_251128",
     "local_scratch_root": "D:\\pipeline_scratch",
     "folder_filter": "*_p*",
     "max_parallel_jobs": 2,
     "cellpose": {
         "use_gpu": true,
         "img_filter": "w00",
+        "diameter": 30.0,
         "flow_threshold": 0.4,
         "cellprob_threshold": 0.0,
         "norm_percentile_low": 1.0,
