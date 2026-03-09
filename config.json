@@ -1,0 +1,25 @@
+{
+    "network_drives": {
+        "T:": "\\\\bs-hpsvr16\\TimelapseData"
+    },
+    "pipeline_tuning": {
+        "fetch_workers": 4,
+        "gpu_workers": 2,
+        "max_staged_folders": 4
+    },
+    "input_root": "D:\\AG\\260112AC11",
+    "output_root": "T:\\AG\\temp2\\260112AC11",
+    "local_scratch_root": "D:\\pipeline_scratch",
+    "folder_filter": "*_p*",
+    "max_parallel_jobs": 2,
+    "cellpose": {
+        "use_gpu": true,
+        "img_filter": "w00",
+        "flow_threshold": 0.4,
+        "cellprob_threshold": 0.0,
+        "norm_percentile_low": 1.0,
+        "norm_percentile_high": 99.0,
+        "save_png": true,
+        "no_npy": true
+    }
+}
