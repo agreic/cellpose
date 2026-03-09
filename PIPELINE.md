@@ -120,8 +120,8 @@ example followed by a detailed explanation of every key.
         "gpu_workers": 2,
         "max_staged_folders": 4
     },
-    "input_root": "T:\\TimelapseData\\251118YZ18",
-    "output_root": "T:\\TimelapseData\\251118YZ18\\Analysis\\Segmentation_251128",
+    "input_root": "T:\\251118YZ18",
+    "output_root": "T:\\251118YZ18\\Analysis\\Segmentation_251128",
     "local_scratch_root": "D:\\pipeline_scratch",
     "folder_filter": "*_p*",
     "cellpose": {
@@ -231,7 +231,7 @@ per second.
 **PowerShell example** (adjust the path to match your `output_root`):
 
 ```powershell
-New-Item -Path "T:\TimelapseData\251118YZ18\Analysis\Segmentation_251128\ABORT_PIPELINE.txt" -ItemType File
+New-Item -Path "T:\251118YZ18\Analysis\Segmentation_251128\ABORT_PIPELINE.txt" -ItemType File
 ```
 
 Once the file is detected the pipeline will:
