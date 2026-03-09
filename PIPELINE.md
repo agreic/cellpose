@@ -93,11 +93,13 @@ Python cleanup handlers and leaves GPU memory locked.
 
 Instead, the pipeline watches for a **kill-switch sentinel file** named
 `ABORT_PIPELINE.txt` in the output directory.  When this file appears the
-pipeline:
+pipeline reacts immediately:
 
-1. Stops downloading new FOV folders immediately.
-2. Lets any Cellpose process that is already running finish its current image.
-3. Uploads completed results, cleans up scratch storage, and exits gracefully.
+1. Drains the fetch queue so no new folders are downloaded.
+2. Drains the staging queue and deletes any already-staged input folders.
+3. Terminates every running Cellpose subprocess instantly, freeing GPU memory.
+4. The worker `finally` blocks still execute, so all temporary files on the
+   scratch drive are cleaned up automatically.
 
 See [Aborting a Detached Run](#aborting-a-detached-run) below for instructions.
 
@@ -237,10 +239,13 @@ New-Item -Path "T:\251118YZ18\Analysis\Segmentation_251128\ABORT_PIPELINE.txt" -
 Once the file is detected the pipeline will:
 
 1. Stop fetching new FOV folders immediately.
-2. Let the currently running Cellpose process finish its image.
-3. Upload the last completed results to the network.
-4. Clean up all temporary files on the scratch drive.
+2. Discard any FOV folders already staged on the scratch drive.
+3. Terminate every running Cellpose subprocess instantly.
+4. Clean up all temporary files on the scratch drive (handled by the worker
+   `finally` blocks).
 5. Release GPU memory and exit.
+
+The entire shutdown typically completes within one to two seconds.
 
 The sentinel file is deleted automatically so it does not interfere with
 subsequent runs.  Because every completed FOV is marked with

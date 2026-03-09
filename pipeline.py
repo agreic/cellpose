@@ -76,10 +76,16 @@ logger = logging.getLogger(__name__)
 
 _active_processes: set = set()
 _proc_lock = threading.Lock()
+_abort_event = threading.Event()
 
 
 def _cleanup_active_processes() -> None:
-    """Terminate any registered subprocesses on interpreter exit.
+    """Terminate any registered subprocesses and their child processes.
+
+    On Windows, ``taskkill /F /T`` is used to kill the entire process tree
+    so that child processes spawned by PyTorch (or similar frameworks) are
+    also terminated and GPU memory is released.  On other platforms a
+    simple ``proc.kill()`` is issued.
 
     Registered with :func:`atexit.register` so that GPU memory is released
     even when the pipeline exits abnormally (e.g. unhandled exception or
@@ -88,8 +94,23 @@ def _cleanup_active_processes() -> None:
     with _proc_lock:
         for proc in list(_active_processes):
             try:
-                proc.kill()
-                logger.info("Terminated orphaned process (PID %d).", proc.pid)
+                if sys.platform == "win32":
+                    subprocess.run(
+                        ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
+                        capture_output=True,
+                        check=False,
+                    )
+                else:
+                    proc.kill()
+                # Wait for the process to fully exit so the OS releases all
+                # file handles before worker finally-blocks attempt cleanup.
+                try:
+                    proc.wait(timeout=10)
+                except Exception:
+                    pass
+                logger.info(
+                    "Terminated process tree (PID %d).", proc.pid
+                )
             except Exception:
                 pass
         _active_processes.clear()
@@ -193,7 +214,7 @@ def fetcher_worker(
         Substring used to restrict which files are staged.  Pass an empty
         string to stage all files in the FOV directory.
     """
-    while True:
+    while not _abort_event.is_set():
         try:
             network_input_dir: Path = fov_queue.get_nowait()
         except queue.Empty:
@@ -241,7 +262,8 @@ def fetcher_worker(
             })
 
         except Exception:
-            logger.exception("Fetch error for %s.", fov_name)
+            if not _abort_event.is_set():
+                logger.exception("Fetch error for %s.", fov_name)
             if temp_input_dir.exists():
                 shutil.rmtree(temp_input_dir, ignore_errors=True)
             if local_input_dir.exists():
@@ -338,7 +360,14 @@ def gpu_worker(
     while True:
         job = ready_queue.get()
 
-        if job is None:
+        # Exit on the natural None sentinel or on the global abort flag.
+        # If a job slipped through the race window during an abort, clean
+        # up its staged input directory before discarding it.
+        if job is None or _abort_event.is_set():
+            if job is not None:
+                staged_dir = job.get("local_input_dir")
+                if staged_dir and Path(staged_dir).exists():
+                    shutil.rmtree(staged_dir, ignore_errors=True)
             ready_queue.task_done()
             break
 
@@ -379,18 +408,19 @@ def gpu_worker(
                         _active_processes.discard(process)
 
             if process.returncode != 0:
-                logger.error(
-                    "Cellpose exited with code %d for %s. See log: %s",
-                    process.returncode,
-                    fov_name,
-                    log_path,
-                )
+                if not _abort_event.is_set():
+                    logger.error(
+                        "Cellpose exited with code %d for %s. See log: %s",
+                        process.returncode,
+                        fov_name,
+                        log_path,
+                    )
                 continue
-            
-            # Remove the _cp_masks suffix from mask files
+
+            # Remove the _cp_masks suffix from mask files.
             for mask_file in temp_output_dir.glob("*_cp_masks*"):
-                            new_name = mask_file.name.replace("_cp_masks", "")
-                            mask_file.rename(temp_output_dir / new_name)
+                new_name = mask_file.name.replace("_cp_masks", "")
+                mask_file.rename(temp_output_dir / new_name)
 
             temp_output_dir.rename(local_output_dir)
 
@@ -401,7 +431,8 @@ def gpu_worker(
             logger.info("Results uploaded for %s.", fov_name)
 
         except Exception:
-            logger.exception("Pipeline error for %s.", fov_name)
+            if not _abort_event.is_set():
+                logger.exception("Pipeline error for %s.", fov_name)
 
         finally:
             for cleanup_dir in [local_input_dir, temp_output_dir, local_output_dir]:
@@ -494,17 +525,57 @@ def main() -> None:
         kill_switch = output_root / "ABORT_PIPELINE.txt"
 
         def _check_for_abort() -> bool:
-            """Return True and drain the fetch queue if the kill-switch file exists."""
+            """Broadcast abort, drain queues, and kill processes if the kill-switch exists.
+
+            When the sentinel file is detected the function:
+
+            1. Sets :data:`_abort_event` so every worker thread sees the
+               signal immediately, closing the race window where a fetcher
+               could sneak a job onto the ready queue after it was drained.
+            2. Drains ``fov_queue`` so no new downloads start.
+            3. Drains ``ready_queue`` and deletes staged input folders so
+               they do not linger on the scratch disk.
+            4. Calls :func:`_cleanup_active_processes` to terminate every
+               running Cellpose process tree immediately.
+
+            The ``gpu_worker`` ``finally`` blocks still execute after the
+            subprocess is killed, so all remaining temporary directories
+            are cleaned up automatically.
+            """
             if not kill_switch.exists():
                 return False
-            logger.critical("Abort file detected. Initiating graceful shutdown.")
+
+            logger.critical("Abort file detected. Initiating immediate shutdown.")
             kill_switch.unlink(missing_ok=True)
+
+            # Broadcast the abort signal to all worker threads *first*,
+            # before draining queues, to prevent the race condition where
+            # a fetcher inserts a new job after the drain completes.
+            _abort_event.set()
+
+            # 1. Drain the fetch queue to stop new downloads.
             while not fov_queue.empty():
                 try:
                     fov_queue.get_nowait()
                     fov_queue.task_done()
                 except queue.Empty:
                     break
+
+            # 2. Drain the ready queue and delete already-staged input folders.
+            while not ready_queue.empty():
+                try:
+                    discarded_job = ready_queue.get_nowait()
+                    if discarded_job is not None:
+                        staged_dir = discarded_job.get("local_input_dir")
+                        if staged_dir and Path(staged_dir).exists():
+                            shutil.rmtree(staged_dir, ignore_errors=True)
+                    ready_queue.task_done()
+                except queue.Empty:
+                    break
+
+            # 3. Kill every running Cellpose process tree to free VRAM.
+            _cleanup_active_processes()
+
             return True
 
         # Poll fetch threads, checking for both CTRL+C and the kill switch.
@@ -515,21 +586,44 @@ def main() -> None:
                 break
             time.sleep(1)
 
-        # Send one stop sentinel per GPU worker so they exit after finishing
-        # their current job.
+        # Send stop sentinels to GPU workers.  Use put_nowait so that a
+        # full queue (possible after abort drained and re-filled by a
+        # late fetcher) does not block the main thread indefinitely.
         for _ in gpu_threads:
-            ready_queue.put(None)
+            try:
+                ready_queue.put_nowait(None)
+            except queue.Full:
+                pass
 
-        # Poll GPU threads with the same non-blocking pattern.
+        # Poll GPU threads, continuing to check the kill switch so that
+        # an abort requested after fetching has finished still takes effect.
         while any(t.is_alive() for t in gpu_threads):
+            if not abort_triggered and _check_for_abort():
+                abort_triggered = True
+                # Re-send stop sentinels; the killed workers may have
+                # already consumed the first batch before dying.
+                for _ in gpu_threads:
+                    try:
+                        ready_queue.put_nowait(None)
+                    except queue.Full:
+                        pass
             time.sleep(1)
 
         if abort_triggered:
+            # Final sweep: remove any leftover temporary directories on
+            # the scratch drive that the worker finally-blocks could not
+            # delete (e.g. due to Windows file-handle release delays).
+            for subdir in ["inputs", "outputs"]:
+                scratch_subdir = scratch_root / subdir
+                if scratch_subdir.exists():
+                    shutil.rmtree(scratch_subdir, ignore_errors=True)
             logger.info("Pipeline safely aborted by user.")
         else:
             logger.info("Pipeline execution complete.")
 
     except KeyboardInterrupt:
+        _abort_event.set()
+        _cleanup_active_processes()
         logger.critical("Interrupted by user. Aborting pipeline.")
         sys.exit(1)
     except Exception:
