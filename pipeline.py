@@ -120,6 +120,85 @@ atexit.register(_cleanup_active_processes)
 
 
 # ---------------------------------------------------------------------------
+# Network-resilient path helpers
+# ---------------------------------------------------------------------------
+
+# Maximum time (seconds) to keep retrying a network path operation before
+# giving up.  Covers typical IT backup snapshots and brief network drops.
+NETWORK_RETRY_TIMEOUT: float = 120.0
+
+# Interval (seconds) between successive retries.
+NETWORK_RETRY_INTERVAL: float = 5.0
+
+
+def _resilient_exists(path: Path) -> bool:
+    """Check if *path* exists, retrying on transient network errors.
+
+    On Windows, network drive hiccups (server snapshots, brief disconnects)
+    can cause ``PermissionError`` or other ``OSError`` subclasses instead of
+    a clean ``True``/``False`` answer.  This wrapper retries the check at
+    :data:`NETWORK_RETRY_INTERVAL`-second intervals until either the call
+    succeeds or :data:`NETWORK_RETRY_TIMEOUT` seconds have elapsed.
+
+    If the timeout is exceeded the function assumes the path does **not**
+    exist and returns ``False``, logging a warning so the event is visible
+    in the pipeline log.
+    """
+    deadline = time.monotonic() + NETWORK_RETRY_TIMEOUT
+    while True:
+        try:
+            return path.exists()
+        except OSError as exc:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                logger.warning(
+                    "Network path unreachable after %.0fs timeout: %s (%s). "
+                    "Assuming path does not exist.",
+                    NETWORK_RETRY_TIMEOUT, path, exc,
+                )
+                return False
+            wait = min(NETWORK_RETRY_INTERVAL, remaining)
+            logger.debug(
+                "Transient network error checking %s: %s. "
+                "Retrying in %.0fs (%.0fs remaining).",
+                path, exc, wait, remaining,
+            )
+            time.sleep(wait)
+
+
+def _resilient_unlink(path: Path) -> None:
+    """Delete *path*, retrying on transient network errors.
+
+    Same retry strategy as :func:`_resilient_exists`.  If the file
+    disappears between retries (``FileNotFoundError``) the call
+    succeeds silently.
+    """
+    deadline = time.monotonic() + NETWORK_RETRY_TIMEOUT
+    while True:
+        try:
+            path.unlink(missing_ok=True)
+            return
+        except FileNotFoundError:
+            return
+        except OSError as exc:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                logger.warning(
+                    "Could not delete network path after %.0fs timeout: "
+                    "%s (%s). Continuing anyway.",
+                    NETWORK_RETRY_TIMEOUT, path, exc,
+                )
+                return
+            wait = min(NETWORK_RETRY_INTERVAL, remaining)
+            logger.debug(
+                "Transient network error deleting %s: %s. "
+                "Retrying in %.0fs (%.0fs remaining).",
+                path, exc, wait, remaining,
+            )
+            time.sleep(wait)
+
+
+# ---------------------------------------------------------------------------
 # Configuration helpers
 # ---------------------------------------------------------------------------
 
@@ -542,11 +621,11 @@ def main() -> None:
             subprocess is killed, so all remaining temporary directories
             are cleaned up automatically.
             """
-            if not kill_switch.exists():
+            if not _resilient_exists(kill_switch):
                 return False
 
             logger.critical("Abort file detected. Initiating immediate shutdown.")
-            kill_switch.unlink(missing_ok=True)
+            _resilient_unlink(kill_switch)
 
             # Broadcast the abort signal to all worker threads *first*,
             # before draining queues, to prevent the race condition where
