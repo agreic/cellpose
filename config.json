@@ -17,6 +17,7 @@
         "diameter": 30.0,
         "flow_threshold": 0.4,
         "cellprob_threshold": 0.0,
+        "batch_size": 32,
         "norm_percentile_low": 1.0,
         "norm_percentile_high": 99.0,
         "save_png": true,

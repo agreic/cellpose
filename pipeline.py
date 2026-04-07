@@ -45,7 +45,7 @@ folder_filter : str
 cellpose : dict
     Cellpose CLI parameters forwarded verbatim.  Recognised keys:
     ``use_gpu``, ``img_filter``, ``pretrained_model``, ``diameter``,
-    ``flow_threshold``, ``cellprob_threshold``, ``norm_percentile_low``,
+    ``flow_threshold``, ``cellprob_threshold``, ``batch_size``, ``norm_percentile_low``,
     ``norm_percentile_high``, ``save_png``, ``no_npy``.
 """
 
@@ -391,6 +391,8 @@ def _build_cellpose_command(
         cmd.extend(["--flow_threshold", str(cp_config["flow_threshold"])])
     if cp_config.get("cellprob_threshold"):
         cmd.extend(["--cellprob_threshold", str(cp_config["cellprob_threshold"])])
+    if cp_config.get("batch_size"):
+        cmd.extend(["--batch_size", str(cp_config["batch_size"])])
     if "norm_percentile_low" in cp_config and "norm_percentile_high" in cp_config:
         cmd.extend([
             "--norm_percentile",
