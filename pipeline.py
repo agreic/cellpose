@@ -418,8 +418,8 @@ def gpu_worker(
     For each job the worker:
 
     1. Creates a temporary local output directory.
-    2. Invokes Cellpose via its CLI, writing all output to
-       ``<temp_output_dir>/cellpose_run.log``.
+     2. Invokes Cellpose via its CLI, writing all output to a persistent
+         log file under ``<scratch_root>/cellpose_logs/``.
     3. On success, renames the temporary directory to its final local path,
        copies results to the network output directory, and writes a
        ``.pipeline_completed`` sentinel file.
@@ -456,6 +456,7 @@ def gpu_worker(
 
         local_output_dir = scratch_root / "outputs" / fov_name
         temp_output_dir = scratch_root / "outputs" / f"{fov_name}_tmp"
+        persistent_log_dir = scratch_root / "cellpose_logs"
 
         try:
             if temp_output_dir.exists():
@@ -464,10 +465,11 @@ def gpu_worker(
                 shutil.rmtree(local_output_dir, ignore_errors=True)
 
             temp_output_dir.mkdir(parents=True, exist_ok=True)
+            persistent_log_dir.mkdir(parents=True, exist_ok=True)
             logger.info("Processing %s.", fov_name)
 
             cmd = _build_cellpose_command(local_input_dir, temp_output_dir, cp_config)
-            log_path = temp_output_dir / "cellpose_run.log"
+            log_path = persistent_log_dir / f"{fov_name}_{time.time_ns()}_cellpose_run.log"
 
             with open(log_path, "w") as log_file:
                 process = subprocess.Popen(
