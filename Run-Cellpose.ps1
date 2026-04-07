@@ -39,6 +39,18 @@ $outLog = "$logDir\pipeline_${timestamp}.log"
 $errLog = "$logDir\pipeline_${timestamp}_err.log"
 $infoLog = "$logDir\pipeline_${timestamp}_info.txt"
 
+# Build a ready-to-run graceful stop command from the config's output_root.
+$abortCommand = "ABORT command unavailable (output_root missing from config)."
+try {
+    $configJson = Get-Content -Path $AbsoluteConfig -Raw | ConvertFrom-Json
+    if ($null -ne $configJson.output_root -and $configJson.output_root.ToString().Trim() -ne "") {
+        $abortFile = Join-Path $configJson.output_root "ABORT_PIPELINE.txt"
+        $abortCommand = "New-Item -Path `"$abortFile`" -ItemType File -Force"
+    }
+} catch {
+    $abortCommand = "ABORT command unavailable (failed to parse config)."
+}
+
 # 4. Launch the Pipeline and Capture the PID
 $argList = "run pipeline.py -c `"$AbsoluteConfig`""
 
@@ -73,6 +85,9 @@ Errors:      $errLog
 To monitor live:
 Get-Content "$outLog" -Wait
 
+To gracefully stop this run:
+$abortCommand
+
 To forcefully kill this exact run (if the ABORT_PIPELINE.txt trick fails):
 taskkill /F /T /PID $capturedPID
 "@
@@ -88,3 +103,5 @@ Write-Host "Live Log:   " -NoNewline; Write-Host "$outLog" -ForegroundColor Dark
 Write-Host "------------------------------------------------"
 Write-Host "Command to watch progress:" -ForegroundColor Yellow
 Write-Host "Get-Content `"$errLog`" -Wait" -ForegroundColor Cyan
+Write-Host "Command to gracefully stop this run:" -ForegroundColor Yellow
+Write-Host "$abortCommand" -ForegroundColor Cyan
