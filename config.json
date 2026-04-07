@@ -3,13 +3,13 @@
         "T:": "\\\\bs-hpsvr16\\TimelapseData"
     },
     "pipeline_tuning": {
-        "fetch_workers": 4,
-        "gpu_workers": 2,
-        "max_staged_folders": 4
+        "fetch_workers": 2,
+        "gpu_workers": 1,
+        "max_staged_folders": 2
     },
     "input_root": "T:\\251118YZ18",
     "output_root": "T:\\251118YZ18\\Analysis\\Segmentation_251128",
-    "local_scratch_root": "D:\\pipeline_scratch",
+    "local_scratch_root": "D:\\pipeline_scratch_AG",
     "folder_filter": "*_p*",
     "cellpose": {
         "use_gpu": true,
