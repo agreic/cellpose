@@ -46,7 +46,7 @@ cellpose : dict
     Cellpose CLI parameters forwarded verbatim.  Recognised keys:
     ``use_gpu``, ``img_filter``, ``pretrained_model``, ``diameter``,
     ``flow_threshold``, ``cellprob_threshold``, ``batch_size``, ``norm_percentile_low``,
-    ``norm_percentile_high``, ``save_png``, ``no_npy``.
+    ``norm_percentile_high``, ``save_png``, ``no_npy``, ``verbose``.
 """
 
 import argparse
@@ -403,6 +403,8 @@ def _build_cellpose_command(
         cmd.append("--save_png")
     if cp_config.get("no_npy"):
         cmd.append("--no_npy")
+    if cp_config.get("verbose"):
+        cmd.append("--verbose")
 
     return cmd
 

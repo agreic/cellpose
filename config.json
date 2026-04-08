@@ -21,6 +21,7 @@
         "norm_percentile_low": 1.0,
         "norm_percentile_high": 99.0,
         "save_png": true,
-        "no_npy": true
+        "no_npy": true,
+        "verbose": true
     }
 }
