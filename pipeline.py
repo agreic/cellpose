@@ -131,6 +131,47 @@ NETWORK_RETRY_TIMEOUT: float = 120.0
 NETWORK_RETRY_INTERVAL: float = 5.0
 
 
+def _copy_staged_file(src_file: Path, dest_file: Path) -> bool:
+    """Copy one staged file with per-file retry handling.
+
+    The retry budget resets for each file. A failure for one file does not
+    affect the retry state of any other file.
+    """
+    deadline = time.monotonic() + NETWORK_RETRY_TIMEOUT
+    attempt = 1
+
+    while True:
+        try:
+            shutil.copy2(src_file, dest_file)
+            return True
+        except OSError as exc:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                logger.error(
+                    "Copying staged input file failed after %.0fs and %d attempt(s) for %s -> %s: %s",
+                    NETWORK_RETRY_TIMEOUT,
+                    attempt,
+                    src_file,
+                    dest_file,
+                    exc,
+                    exc_info=True,
+                )
+                return False
+
+            wait = min(NETWORK_RETRY_INTERVAL, remaining)
+            logger.warning(
+                "Copying staged input file failed on attempt %d for %s -> %s (%s). Retrying in %.0fs (%.0fs remaining).",
+                attempt,
+                src_file,
+                dest_file,
+                exc,
+                wait,
+                remaining,
+            )
+            time.sleep(wait)
+            attempt += 1
+
+
 def _resilient_exists(path: Path) -> bool:
     """Check if *path* exists, retrying on transient network errors.
 
@@ -320,6 +361,9 @@ def fetcher_worker(
             search_pattern = f"*{img_filter}*.*" if img_filter else "*.*"
             files_to_copy = list(network_input_dir.glob(search_pattern))
 
+            # Filter for files ending with .png, .jpg, .jpeg, .tif, or .tiff (case-insensitive)
+            files_to_copy = [f for f in files_to_copy if f.suffix.lower() in {".png", ".jpg", ".jpeg", ".tif", ".tiff"}]
+
             if not files_to_copy:
                 logger.warning(
                     "No files matching '%s' found in %s. Skipping.",
@@ -328,11 +372,27 @@ def fetcher_worker(
                 )
                 continue
 
+            copied_files = 0
             for src_file in files_to_copy:
-                shutil.copy2(src_file, temp_input_dir / src_file.name)
+                if _copy_staged_file(src_file, temp_input_dir / src_file.name):
+                    copied_files += 1
+
+            if copied_files == 0:
+                logger.warning("No files could be copied for %s. Skipping.", fov_name)
+                if temp_input_dir.exists():
+                    shutil.rmtree(temp_input_dir, ignore_errors=True)
+                continue
 
             temp_input_dir.rename(local_input_dir)
-            logger.info("Staged %d file(s) for %s.", len(files_to_copy), fov_name)
+            if copied_files < len(files_to_copy):
+                logger.warning(
+                    "Staged %d of %d file(s) for %s.",
+                    copied_files,
+                    len(files_to_copy),
+                    fov_name,
+                )
+            else:
+                logger.info("Staged %d file(s) for %s.", copied_files, fov_name)
 
             ready_queue.put({
                 "fov_name": fov_name,
