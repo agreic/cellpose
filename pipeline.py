@@ -44,9 +44,13 @@ folder_filter : str
     Glob pattern used to select FOV sub-folders (default ``"*_p*"``).
 cellpose : dict
     Cellpose CLI parameters forwarded verbatim.  Recognised keys:
-    ``use_gpu``, ``img_filter``, ``pretrained_model``, ``diameter``,
-    ``flow_threshold``, ``cellprob_threshold``, ``batch_size``, ``norm_percentile_low``,
-    ``norm_percentile_high``, ``save_png``, ``no_npy``, ``verbose``.
+    ``use_gpu``, ``img_filter``, ``pretrained_model``, ``no_norm``,
+    ``do_3D``, ``diameter``, ``stitch_threshold``, ``min_size``,
+    ``flow3D_smooth``, ``flow_threshold``, ``cellprob_threshold``,
+    ``niter``, ``anisotropy``, ``exclude_on_edges``, ``augment``,
+    ``batch_size``, ``no_resample``, ``no_interp``,
+    ``norm_percentile_low``, ``norm_percentile_high``, ``save_png``,
+    ``no_npy``, ``verbose``.
 """
 
 import argparse
@@ -439,32 +443,42 @@ def _build_cellpose_command(
         "--savedir", str(temp_output_dir),
     ]
 
-    if cp_config.get("use_gpu"):
-        cmd.append("--use_gpu")
-    if cp_config.get("img_filter"):
-        cmd.extend(["--img_filter", cp_config["img_filter"]])
-    if cp_config.get("pretrained_model"):
-        cmd.extend(["--pretrained_model", cp_config["pretrained_model"]])
-    if cp_config.get("diameter"):
-        cmd.extend(["--diameter", str(cp_config["diameter"])])
-    if cp_config.get("flow_threshold"):
-        cmd.extend(["--flow_threshold", str(cp_config["flow_threshold"])])
-    if cp_config.get("cellprob_threshold"):
-        cmd.extend(["--cellprob_threshold", str(cp_config["cellprob_threshold"])])
-    if cp_config.get("batch_size"):
-        cmd.extend(["--batch_size", str(cp_config["batch_size"])])
+    def add_flag(key: str, flag: str | None = None) -> None:
+        if cp_config.get(key):
+            cmd.append(flag or f"--{key}")
+
+    def add_value(key: str, flag: str | None = None) -> None:
+        if key in cp_config:
+            cmd.extend([flag or f"--{key}", str(cp_config[key])])
+
+    add_flag("use_gpu")
+    add_flag("no_norm")
+    add_flag("do_3D")
+    add_flag("exclude_on_edges")
+    add_flag("augment")
+    add_flag("no_resample")
+    add_flag("no_interp")
+    add_flag("save_png")
+    add_flag("no_npy")
+    add_flag("verbose")
+
+    add_value("img_filter")
+    add_value("pretrained_model")
+    add_value("diameter")
+    add_value("stitch_threshold")
+    add_value("min_size")
+    add_value("flow3D_smooth")
+    add_value("flow_threshold")
+    add_value("cellprob_threshold")
+    add_value("niter")
+    add_value("anisotropy")
+    add_value("batch_size")
     if "norm_percentile_low" in cp_config and "norm_percentile_high" in cp_config:
         cmd.extend([
             "--norm_percentile",
             str(cp_config["norm_percentile_low"]),
             str(cp_config["norm_percentile_high"]),
         ])
-    if cp_config.get("save_png"):
-        cmd.append("--save_png")
-    if cp_config.get("no_npy"):
-        cmd.append("--no_npy")
-    if cp_config.get("verbose"):
-        cmd.append("--verbose")
 
     return cmd
 
