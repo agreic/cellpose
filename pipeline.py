@@ -42,9 +42,18 @@ local_scratch_root : str
     Path to local fast storage used for input/output staging.
 folder_filter : str
     Glob pattern used to select FOV sub-folders (default ``"*_p*"``).
+timepoint_range : [int, int], optional
+    Inclusive ``[start, end]`` filter on the ``_t<digits>`` token in each
+    filename.  For example ``[1, 199]`` stages only files whose embedded
+    time-point number (e.g. ``_t0001_``, ``_t0199_``) is between 1 and 199
+    inclusive.  Omit the key (or set it to ``null``) to process all
+    time points.
 cellpose : dict
     Cellpose CLI parameters forwarded verbatim.  Recognised keys:
-    ``use_gpu``, ``img_filter``, ``pretrained_model``, ``no_norm``,
+    ``use_gpu``, ``img_filter``,
+    ``pretrained_model`` (path to a custom model file or one of the built-in
+    names: ``cyto3``, ``cpsam_v2``, ``cpdino``, ``cpdino-vitb``, ``cpsam``),
+    ``no_norm``,
     ``do_3D``, ``diameter``, ``stitch_threshold``, ``min_size``,
     ``flow3D_smooth``, ``flow_threshold``, ``cellprob_threshold``,
     ``niter``, ``anisotropy``, ``exclude_on_edges``, ``augment``,
@@ -57,13 +66,24 @@ import argparse
 import atexit
 import json
 import logging
+import os
 import queue
+import re
 import shutil
 import subprocess
 import sys
 import threading
 import time
 from pathlib import Path
+
+
+_TIMEPOINT_RE = re.compile(r"_t(\d+)", re.IGNORECASE)
+
+
+def _parse_timepoint(name: str) -> int | None:
+    """Return the integer time-point embedded as ``_t<digits>`` in *name*, or ``None``."""
+    m = _TIMEPOINT_RE.search(name)
+    return int(m.group(1)) if m else None
 
 
 logging.basicConfig(
@@ -310,6 +330,7 @@ def fetcher_worker(
     scratch_root: Path,
     output_root: Path,
     img_filter: str,
+    timepoint_range: list | None = None,
 ) -> None:
     """Stage raw images for one FOV at a time from the network to local scratch.
 
@@ -337,6 +358,10 @@ def fetcher_worker(
     img_filter : str
         Substring used to restrict which files are staged.  Pass an empty
         string to stage all files in the FOV directory.
+    timepoint_range : list of two ints, optional
+        Inclusive ``[start, end]`` filter on the ``_t<digits>`` token in each
+        filename.  Files whose time-point number falls outside the range are
+        skipped.  ``None`` disables the filter (all time points are staged).
     """
     while not _abort_event.is_set():
         try:
@@ -367,6 +392,17 @@ def fetcher_worker(
 
             # Filter for files ending with .png, .jpg, .jpeg, .tif, or .tiff (case-insensitive)
             files_to_copy = [f for f in files_to_copy if f.suffix.lower() in {".png", ".jpg", ".jpeg", ".tif", ".tiff"}]
+
+            if timepoint_range is not None:
+                tp_min, tp_max = timepoint_range
+                files_to_copy = [
+                    f for f in files_to_copy
+                    if (tp := _parse_timepoint(f.name)) is not None and tp_min <= tp <= tp_max
+                ]
+                logger.debug(
+                    "%s: timepoint filter [%d, %d] left %d file(s).",
+                    fov_name, tp_min, tp_max, len(files_to_copy),
+                )
 
             if not files_to_copy:
                 logger.warning(
@@ -549,12 +585,27 @@ def gpu_worker(
             cmd = _build_cellpose_command(local_input_dir, temp_output_dir, cp_config)
             log_path = persistent_log_dir / f"{fov_name}_{time.time_ns()}_cellpose_run.log"
 
+            # Give each subprocess its own USERPROFILE so that cellpose's
+            # logger_setup() writes run.log to a scratch path instead of
+            # ~/.cellpose/run.log, which would conflict with a concurrently
+            # running GUI (PermissionError on Windows because the file is open).
+            proc_env = os.environ.copy()
+            proc_home = scratch_root / "cellpose_home" / fov_name
+            proc_home.mkdir(parents=True, exist_ok=True)
+            proc_env["USERPROFILE"] = str(proc_home)
+            # Preserve the real models directory so builtin model names resolve.
+            if "CELLPOSE_LOCAL_MODELS_PATH" not in proc_env:
+                real_models = Path.home() / ".cellpose" / "models"
+                if real_models.exists():
+                    proc_env["CELLPOSE_LOCAL_MODELS_PATH"] = str(real_models)
+
             with open(log_path, "w") as log_file:
                 process = subprocess.Popen(
                     cmd,
                     stdout=log_file,
                     stderr=subprocess.STDOUT,
                     text=True,
+                    env=proc_env,
                 )
 
                 with _proc_lock:
@@ -576,9 +627,9 @@ def gpu_worker(
                     )
                 continue
 
-            # Remove the _cp_masks suffix from mask files.
+            # Rename _cp_masks suffix to _m00 in mask files.
             for mask_file in temp_output_dir.glob("*_cp_masks*"):
-                new_name = mask_file.name.replace("_cp_masks", "")
+                new_name = mask_file.name.replace("_cp_masks", "_m00")
                 mask_file.rename(temp_output_dir / new_name)
 
             temp_output_dir.rename(local_output_dir)
@@ -594,7 +645,8 @@ def gpu_worker(
                 logger.exception("Pipeline error for %s.", fov_name)
 
         finally:
-            for cleanup_dir in [local_input_dir, temp_output_dir, local_output_dir]:
+            proc_home = scratch_root / "cellpose_home" / fov_name
+            for cleanup_dir in [local_input_dir, temp_output_dir, local_output_dir, proc_home]:
                 if cleanup_dir.exists():
                     shutil.rmtree(cleanup_dir, ignore_errors=True)
             ready_queue.task_done()
@@ -671,6 +723,7 @@ def main() -> None:
                     scratch_root,
                     output_root,
                     config["cellpose"].get("img_filter", ""),
+                    config.get("timepoint_range"),
                 ),
                 daemon=True,
             )
