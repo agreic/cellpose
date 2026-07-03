@@ -54,6 +54,9 @@ try {
 # 4. Launch the Pipeline and Capture the PID
 $argList = "run pipeline.py -c `"$AbsoluteConfig`""
 
+# Set the model dir:
+$env:CELLPOSE_LOCAL_MODELS_PATH='D:\cellpose_models'
+
 Write-Host "Launching pipeline from: $WorkDir" -ForegroundColor Cyan
 
 # Added -WorkingDirectory to guarantee uv finds the right python environment and pipeline.py
